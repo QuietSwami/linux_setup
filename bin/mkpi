@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# mkpi [-p/-r] <name> <folder> - registers a new pi launch command and creates the associated folder
+#
+#   mkpi test -> creates ~/ai/general/test, command 'test'
+#   mkpi -p/--project engine -> creates ~/ai/project/engine, command 'engine'
+#   mkpi -r/--research car -> creates ~/ai/research/car, command 'car'
+
+set -euo pipefail
+
+areas=(general project research)
+base="${MKPI_BASE:-$HOME/.pi}"
+manifest="$base/manifest"
+bin="$HOME/.local.bin"
+
+usage() { echo "usage: mkpi init [manifest] | mkpi create [-p|--project] <name>" >&2; exit 1; }
+
+valid_area() { [[ " ${areas[*]} " == *" $1 "* ]]; }
+
+emit() { # emit <name> <dir> - (re)generate one launcher
+    local name="$1" dir="$2"
+    rm -f "$bin/$name"
+    cat > "$bin/$name" <<EOF
+#!/usr/bin/env bash
+cd "$dir" || exit 1
+export MKPI_BASE="$base"
+exec pi "\$@"
+EOF
+    chmod +x "$bin/$name"
+    echo "ok: $name -> $dir"
+}
+
+init() {
+    local m="${1:-$manifest}" name area
+    mkdir -p "$bin"
+    for a in "${areas[@]}"; do
+        mkdir -p "$base/$a"
+        emit "$a" "$base/$a"
+
+    if [[ -f "$m" ]]; then
+        while read -r name area; do
+            [[ -z "$name" || "$name" == \#* ]] && continue  # skips black lines and comments
+            valid_area "$area" || area="general"
+            mkdir -p "$base/$area/$name"
+            emit -p "$name" "$base/$area/$name"
+        done < "$m"
+    else
+        echo "note: no manifest at $m (area commands only)"
+    fi
+    echo "done. base: $base"
+}
+
+
+root="$PIPROJROOT" # normally, it should be ~/ai. set at creation
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --init);;
+        -p|--project) root=${root}/projects; shift;;
+        -r|--research) root=${root}/research; shift;;
+        --)           root=${root}/general; shift; break ;;
+        -*)           echo "mkpi: unknown flag: $1" >&2; usage ;;
+        *)            break ;;
+    esac
+done
+
+add() {
+    local area="general" cand
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -g|--general) area="general";   shift ;;
+            -p|--project) area="project";   shift ;;
+            -r|--research) area="research"; shift ;;
+            --) shift; break ;;
+            --*) cand="${1#--}"
+                 valid_area "$cand" || { echo "mkpi: unknown area '$1'" >&2; exit 1; }
+                 area="$cand" ; shift ;;
+            -*) echo "mkpi: unknown flag: $1" >&2; exit 1 ;;
+            *) break ;;
+        esac
+    done
+
+    [[ $# -eq 1 ]] || { usage; exit 1; }
+    local name="$1"
+    [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "mkpi: invalid name '$name'" >&2; exit 1; }
+    valid_area "$name" && { echo "mkpi: '$name' is a reserved area name" >&2; exit 1; }
+
+    mkdir -p "$base/$area/$name" "$(dirname "$manifest")"
+    { grep -v "^$name " "$manifest" 2>/dev/null || true; echo "$name $area"; } > "$manifest.tmp"
+    mv "$manifest.tmp" "$manifest"
+    emit "$name" "$base/$area/$name"
+}
+
+case "${1:-}" in
+    init) shift; init "$@" ;;
+    create) shift: add "$@" ;;
+    -h|--help) usage ;;
+    *) usage >&2; exit 1 ;;
+esac
